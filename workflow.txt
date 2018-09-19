@@ -1,0 +1,6 @@
+cp /mnt/c/Users/mstei/Documents/Projects/CarND/Term2/CarND-MPC-Project/src/main.cpp CarND-MPC-Project/src/main.cpp
+cp /mnt/c/Users/mstei/Documents/Projects/CarND/Term2/CarND-MPC-Project/src/MPC.cpp CarND-MPC-Project/src/MPC.cpp
+cp /mnt/c/Users/mstei/Documents/Projects/CarND/Term2/CarND-MPC-Project/src/MPC.h CarND-MPC-Project/src/MPC.h
+cd CarND-MPC-Project/build
+cmake .. && make
+./mpc
