@@ -19,7 +19,7 @@ double px = j[1]["x"];
 double py = j[1]["y"];
 double psi = j[1]["psi"];
 double v = j[1]["speed"];
-//v*= 0.44704; //conversion to m/s
+v*= 0.44704; //conversion to m/s
 //additional values for extrapolating the position of the car including delay
 double curr_steer_ang = j[1]["steering_angle"];
 double curr_throttle = j[1]["throttle"];
@@ -27,10 +27,10 @@ double curr_throttle = j[1]["throttle"];
 In order to **account for 100ms delay time of the response** this data is used to not calculate the current state of the vehicle but the state of the vehicle in 100ms.
 
 ```cpp
-double v_fut=v+curr_throttle*0.1;
-double psi_fut = (v+v_fut)/(2*Lf) * curr_steer_ang*deg2rad(25)* 0.1; //"(v+v_fut)/2" assuming constant acceleration
-double x_fut= (v+v_fut)/2 * cos((0+psi_fut)/2.0)*0.1;               // "(psi_fut+psi)/2" assuming constant change in direction with psi being 0 in car-coordinates
-double y_fut= (v+v_fut)/2 * sin((0+psi_fut)/2.0)*0.1;
+double v_fut=v+curr_throttle*latency;
+double psi_fut = psi - v/Lf * curr_steer_ang * latency;
+double x_fut= px + v * cos(psi)*latency;
+double y_fut= py + v * sin(psi)*latency;
 ```
 
 Then the conversion of the reference map points from map-coordinates to car-coordinates is also done with respect to the future car position. These new reference points are used to create an interpolating polynomial.
@@ -40,10 +40,10 @@ Eigen::VectorXd ptsx_car(ptsx.size());
 Eigen::VectorXd ptsy_car(ptsy.size());
 
 for(int i=0; i<ptsx.size(); i++){
-    double x_eff=ptsx[i]-px;
-    double y_eff=ptsy[i]-py;
-    ptsx_car[i]=(x_eff*cos(psi-psi_fut)+y_eff*sin(psi-psi_fut)-x_fut);
-    ptsy_car[i]=(-x_eff*sin(psi-psi_fut)+y_eff*cos(psi-psi_fut)+y_fut);
+	double x_eff=ptsx[i]-x_fut;
+	double y_eff=ptsy[i]-y_fut;
+	ptsx_car[i]=(x_eff*cos(psi_fut)+y_eff*sin(psi_fut));
+	ptsy_car[i]=(-x_eff*sin(psi_fut)+y_eff*cos(psi_fut));
     }
 
 //fit polynomial to line
@@ -55,7 +55,7 @@ With the car being at the center point of the polynomial of the mapped reference
 
 ```cpp
 double cte_fut= polyeval(coeffs, 0);
-double epsi_fut=atan(coeffs[1]);
+double epsi_fut=-atan(coeffs[1]);
 
 Eigen::VectorXd state(6);
 state << 0, 0, 0, v_fut, cte_fut, epsi_fut;
@@ -72,6 +72,39 @@ Similar to the Quiz "Mind the Line" those state-values and additional actuator v
 Two other vectors are created (`vars_upperbound`,`vars_lowerbound`) containing the upper and lower bound (constraints) for each of the vehicle/actuator states in each time-step respectively. For example the steering angle is limited to +/- 0.435332 rad (+/- 25°).
 
 The evalutation class `fg_eval` tries to solve the equations predicting the future vehicle states while minimzing an error- or cost-function.
+
+##### The error- or cost-function to be minimized
+```cpp
+fg[0] = 0;
+
+for (int t = 0; t < N; t++) {
+	fg[0] += 1000 *CppAD::pow(vars[cte_start + t], 2);
+	fg[0] += 1000 * CppAD::pow(vars[epsi_start + t], 2);
+	fg[0] +=  CppAD::pow(vars[v_start + t] - ref_v, 2);
+    }
+
+    // Minimize the use of actuators.
+for (int t = 0; t < N - 1; t++) {
+	fg[0] +=  20* CppAD::pow(vars[delta_start + t], 2);
+	fg[0] +=  5* CppAD::pow(vars[a_start + t], 2);
+	//corner breaking
+	fg[0] += 250 * CppAD::pow(vars[delta_start + t]*vars[v_start + t], 2);
+
+    }
+
+    // Minimize the value gap between sequential actuations.
+for (int t = 0; t < N - 2; t++) {
+	fg[0] += 500 * CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
+	fg[0] += CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
+    }
+```
+with
+```cpp
+//Goal velocity in m/s
+double ref_v = 30;
+```
+For each predicted future time step the values are used to calculate a penalty which needs to be minimized in order to let the vehicle drive as efficiently as possible.
+Here I introduced certain factors for each vehicle state parameter. This was done by trial and error. The driving behavior of the car was geared towards a rather conservative driving style. It often happend that after several successful laps, the car would start to build up to a oscillation around the center line on straight parts of the lap. For this and for smooth (and realistic) steering around corners I introduced a penalty for high velocities at high steering angles.
 
 ##### The constraining equations predicting the future vehicle states
 ```cpp
@@ -106,44 +139,12 @@ for (int t = 1; t < N; t++) {
     }
 ```
 This is based on Quiz of the previous lesson but modified to accommodate for a cubic polynomial.
+In this part of the solver
+fg..part of solver
 
-##### The error- or cost-function to be minimized
-```cpp
-fg[0] = 0;
+![Equations of the Motion model  from the lecture ](equations.jpg)
 
-    // The part of the cost based on the reference state.
-    for (int t = 0; t < N; t++) {
-      fg[0] += 5000 *CppAD::pow(vars[cte_start + t], 2);
-      fg[0] += 500 * CppAD::pow(vars[epsi_start + t], 2);
-      fg[0] +=  CppAD::pow(vars[v_start + t] - ref_v, 2);
-    }
 
-    // Minimize the use of actuators.
-    for (int t = 0; t < N - 1; t++) {
-      fg[0] +=  5* CppAD::pow(vars[delta_start + t], 2);
-      fg[0] +=  5* CppAD::pow(vars[a_start + t], 2);
-      //corner breaking
-      fg[0] += 300 * CppAD::pow(vars[delta_start + t]*vars[v_start + t], 2);
-
-    }
-
-    // Minimize the value gap between sequential actuations.
-    for (int t = 0; t < N - 2; t++) {
-      fg[0] += 300 * CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
-      //fg[0] += CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
-    }
-```
-with
-```cpp
-//Goal velocity
-double ref_v = 150;
-```
-For each predicted future time step the values are used to calculate a penalty which needs to be minimized in order to let the vehicle drive as efficiently as possible.
-Here I introduced certain factors for each vehicle state parameter. This was done by trial and error. The driving behavior of the car was geared towards an aggressive driving style in order to archive higher velocities. That is why I did not include a penalty for abrupt acceleration and deceleration (~late braking etc.).
-
-For smooth (and realistic) steering around corners I introduced a penalty for high velocities at high steering angles.
-
-I chose a high goal velocity so that the model accelerates at maximum whenever it is possible to accelerate.
 
 #### Timestep Length and Elapsed Duration (N & dt)
 
@@ -156,7 +157,7 @@ double dt = 0.1;
 ```
 
 - `dt` was chosen to be 0.1 s as this is the (artificial) response delay. Anything smaller than 0.1s would make the model more complex to compute without a noticeable improvement in the solution. Bigger values would make the model more unstable especially at higher speeds
-- `N` was chosen to be 8. Bigger values made the driving less stable, most likely because the car is not **directly** forced towards the optimal line but rather further "down the line". Furthermore, at higher speeds the length of the predicted line is very far in the front (future) lacking any aditional information to the current state. Smaller values had problems finding a stable solution at very slow speeds (around corners, at the very beginning).
+- `N` was chosen to be 8. Bigger values made the driving less stable, most likely because the car is not *directly* forced towards the optimal line but rather further "down the line". Furthermore, at higher speeds the length of the predicted line is very far in the front (future) lacking any additional information to the current state. Smaller values had problems finding a stable solution at very slow speeds (around corners, at the very beginning).
 
 #### Results
 
@@ -174,7 +175,7 @@ for(int i=y_start; i<psi_start; i++){
 shortened_solution.push_back(solution.x[delta_start]);
 shortened_solution.push_back(solution.x[a_start]);
 shortened_solution.push_back(N); //adding length of vector to result, (easier testing later)
-  ```
+```
 In the main function the data is extracted from the variable (here named `vars`) and used from actuating the car and displaying the proposed car trajectory.
 
 ```cpp
@@ -206,8 +207,6 @@ In the main function the data is extracted from the variable (here named `vars`)
 
 ### Performance
 
-I aimed for a very aggressive race-driver-like driving style. Because of this, I basically maxed out the prerequisites ("No tire may leave the drivable portion of the track surface. The car may not pop up onto ledges...") to pass this project.
-This allowed me to have **driving speeds of up to 108 mph with the car finishing infinite successful laps**.
-With a slower driving style (maximum velocity of e.g. 70mph, higher `epsi` penalty, to not cut corners) the car stays further to the center of the lane.
+With the current setting the car is able to perform several laps on the track with a maximum velocity of 59mph.
 
 Before compensating for the response delay the driving performance was much poorer. I barely reached 30mph without starting to lurch over the whole lane as the car was overcompensating for the previous driving actuations. Additionally the mapped reference points were shifted while the car was turning, leading to further inaccuracies.

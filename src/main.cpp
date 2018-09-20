@@ -96,20 +96,19 @@ int main() {
           double py = j[1]["y"];
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
-          //v*= 0.44704; //conversion to m/s
+          v*= 0.44704; //conversion to m/s
           //additional values for extrapolating the position of the car including delay
           double curr_steer_ang = j[1]["steering_angle"];
           double curr_throttle = j[1]["throttle"];
 
-
+          double latency=0.1;
           /*
           * Approximate position of car in 0.1 sec to account for time delay - Part 1
           */
-          double v_fut=v+curr_throttle*0.1;
-          double psi_fut = (v+v_fut)/(2*Lf) * curr_steer_ang*deg2rad(25)* 0.1; //"(v+v_fut)/2" assuming constant acceleration
-          double x_fut= (v+v_fut)/2 * cos((psi_fut+0)/2.0)*0.1; // "(psi_fut+psi)/2" assuming constant change in direction with psi being 0 in car coordinates
-          double y_fut= (v+v_fut)/2 * sin((psi_fut+0)/2.0)*0.1;
-
+          double v_fut=v+curr_throttle*latency;
+          double psi_fut = psi - v/Lf * curr_steer_ang * latency;
+          double x_fut= px + v * cos(psi)*latency;
+          double y_fut= py + v * sin(psi)*latency;
 
           /*
           * Transform map points into car coordinates (also taking into account future car position)
@@ -118,10 +117,10 @@ int main() {
           Eigen::VectorXd ptsy_car(ptsy.size());
 
           for(int i=0; i<ptsx.size(); i++){
-                double x_eff=ptsx[i]-px;
-                double y_eff=ptsy[i]-py;
-                ptsx_car[i]=(x_eff*cos(psi-psi_fut)+y_eff*sin(psi-psi_fut)-x_fut);
-                ptsy_car[i]=(-x_eff*sin(psi-psi_fut)+y_eff*cos(psi-psi_fut)+y_fut);
+                double x_eff=ptsx[i]-x_fut;
+                double y_eff=ptsy[i]-y_fut;
+                ptsx_car[i]=(x_eff*cos(psi_fut)+y_eff*sin(psi_fut));
+                ptsy_car[i]=(-x_eff*sin(psi_fut)+y_eff*cos(psi_fut));
           }
 
           //fit polynome to line
@@ -133,7 +132,9 @@ int main() {
           */
 
           double cte_fut= polyeval(coeffs, 0);
-          double epsi_fut=atan(coeffs[1]);
+          double epsi_fut=-atan(coeffs[1]);
+
+
 
           Eigen::VectorXd state(6);
           state << 0, 0, 0, v_fut, cte_fut, epsi_fut;
