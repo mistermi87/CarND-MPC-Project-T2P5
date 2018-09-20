@@ -3,106 +3,211 @@ Self-Driving Car Engineer Nanodegree Program
 
 ---
 
-## Dependencies
+## Readme/WriteUp
 
-* cmake >= 3.5
- * All OSes: [click here for installation instructions](https://cmake.org/install/)
-* make >= 4.1(mac, linux), 3.81(Windows)
-  * Linux: make is installed by default on most Linux distros
-  * Mac: [install Xcode command line tools to get make](https://developer.apple.com/xcode/features/)
-  * Windows: [Click here for installation instructions](http://gnuwin32.sourceforge.net/packages/make.htm)
-* gcc/g++ >= 5.4
-  * Linux: gcc / g++ is installed by default on most Linux distros
-  * Mac: same deal as make - [install Xcode command line tools]((https://developer.apple.com/xcode/features/)
-  * Windows: recommend using [MinGW](http://www.mingw.org/)
-* [uWebSockets](https://github.com/uWebSockets/uWebSockets)
-  * Run either `install-mac.sh` or `install-ubuntu.sh`.
-  * If you install from source, checkout to commit `e94b6e1`, i.e.
-    ```
-    git clone https://github.com/uWebSockets/uWebSockets
-    cd uWebSockets
-    git checkout e94b6e1
-    ```
-    Some function signatures have changed in v0.14.x. See [this PR](https://github.com/udacity/CarND-MPC-Project/pull/3) for more details.
+### The Model
+#### Polynomial Fitting and MPC Preprocessing
 
-* **Ipopt and CppAD:** Please refer to [this document](https://github.com/udacity/CarND-MPC-Project/blob/master/install_Ipopt_CppAD.md) for installation instructions.
-* [Eigen](http://eigen.tuxfamily.org/index.php?title=Main_Page). This is already part of the repo so you shouldn't have to worry about it.
-* Simulator. You can download these from the [releases tab](https://github.com/udacity/self-driving-car-sim/releases).
-* Not a dependency but read the [DATA.md](./DATA.md) for a description of the data sent back from the simulator.
+My model is based on the Quiz "Mind the Line" from the previous lesson.
+
+Values of the current state of the vehicle and the 6(?) next reference points of the optimal driving line in the map are read and saved.
+
+```cpp
+vector<double> ptsx = j[1]["ptsx"];
+vector<double> ptsy = j[1]["ptsy"];
+double px = j[1]["x"];
+double py = j[1]["y"];
+double psi = j[1]["psi"];
+double v = j[1]["speed"];
+//v*= 0.44704; //conversion to m/s
+//additional values for extrapolating the position of the car including delay
+double curr_steer_ang = j[1]["steering_angle"];
+double curr_throttle = j[1]["throttle"];
+```
+In order to **account for 100ms delay time of the response** this data is used to not calculate the current state of the vehicle but the state of the vehicle in 100ms.
+
+```cpp
+double v_fut=v+curr_throttle*0.1;
+double psi_fut = (v+v_fut)/(2*Lf) * curr_steer_ang*deg2rad(25)* 0.1; //"(v+v_fut)/2" assuming constant acceleration
+double x_fut= (v+v_fut)/2 * cos((0+psi_fut)/2.0)*0.1;               // "(psi_fut+psi)/2" assuming constant change in direction with psi being 0 in car-coordinates
+double y_fut= (v+v_fut)/2 * sin((0+psi_fut)/2.0)*0.1;
+```
+
+Then the conversion of the reference map points from map-coordinates to car-coordinates is also done with respect to the future car position. These new reference points are used to create an interpolating polynomial.
+
+```cpp
+Eigen::VectorXd ptsx_car(ptsx.size());
+Eigen::VectorXd ptsy_car(ptsy.size());
+
+for(int i=0; i<ptsx.size(); i++){
+    double x_eff=ptsx[i]-px;
+    double y_eff=ptsy[i]-py;
+    ptsx_car[i]=(x_eff*cos(psi-psi_fut)+y_eff*sin(psi-psi_fut)-x_fut);
+    ptsy_car[i]=(-x_eff*sin(psi-psi_fut)+y_eff*cos(psi-psi_fut)+y_fut);
+    }
+
+//fit polynomial to line
+auto coeffs = polyfit(ptsx_car, ptsy_car,3);
+```
+
+The coefficient of the polynomial are then used to calculate the approximate errors of the future state (`cte`:diversion from line, `epsi`: diversion from line direction).
+With the car being at the center point of the polynomial of the mapped reference points and the car always facing forward (`psi`=0) in respect to the car, an almost empty vector of the current state is defined and loaded into the solver
+
+```cpp
+double cte_fut= polyeval(coeffs, 0);
+double epsi_fut=atan(coeffs[1]);
+
+Eigen::VectorXd state(6);
+state << 0, 0, 0, v_fut, cte_fut, epsi_fut;
+
+//Solve for best solution
+auto vars = mpc.Solve(state, coeffs);
+```
+
+#### Student describes their model in detail. This includes the state, actuators and update equations
+
+This vehicle state, containing the position `x`,`y`, the current angle `psi`, the velocity `v`, and the positional error `cte` as well as the angular error `epsi` is loaded into the solver function. Additionally the coefficients of the polynomial of the reference points (in car coordinates) are given to that function.
+
+Similar to the Quiz "Mind the Line" those state-values and additional actuator values (steering angle and acceleration) are loaded into a single vector (`vars`) for further processing. This value contains also space for the state of the car and the actuators in N future time steps.
+Two other vectors are created (`vars_upperbound`,`vars_lowerbound`) containing the upper and lower bound (constraints) for each of the vehicle/actuator states in each time-step respectively. For example the steering angle is limited to +/- 0.435332 rad (+/- 25°).
+
+The evalutation class `fg_eval` tries to solve the equations predicting the future vehicle states while minimzing an error- or cost-function.
+
+##### The constraining equations predicting the future vehicle states
+```cpp
+for (int t = 1; t < N; t++) {
+      AD<double> x0 = vars[x_start + t - 1];
+      AD<double> y0 = vars[y_start + t - 1];
+      AD<double> psi0 = vars[psi_start + t - 1];
+      AD<double> v0 = vars[v_start + t - 1];
+      AD<double> cte0 = vars[cte_start + t - 1];
+      AD<double> epsi0 = vars[epsi_start + t - 1];
+
+      AD<double> x1 = vars[x_start + t];
+      AD<double> y1 = vars[y_start + t];
+      AD<double> psi1 = vars[psi_start + t];
+      AD<double> v1 = vars[v_start + t];
+      AD<double> cte1 = vars[cte_start + t];
+      AD<double> epsi1 = vars[epsi_start + t];
+
+      // Only consider the actuation at time t.
+      AD<double> delta0 = vars[delta_start + t - 1];
+      AD<double> a0 = vars[a_start + t - 1];
+
+      AD<double> f0 = coeffs[0] + coeffs[1] * x0 + coeffs[2]*CppAD::pow(x0, 2) + coeffs[3]*CppAD::pow(x0, 3); //cubic polynomial
+      AD<double> psides0 = CppAD::atan(coeffs[1]+2*coeffs[2] *x0 + 3*coeffs[3]*CppAD::pow(x0, 2)); //arctan of derivate of cubic polynomial at x
+
+      fg[1 + x_start + t] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt);
+      fg[1 + y_start + t] = y1 - (y0 + v0 * CppAD::sin(psi0) * dt);
+      fg[1 + psi_start + t] = psi1 - (psi0-v0/Lf*delta0 * dt); //updated to opposite direction
+      fg[1 + v_start + t] = v1 - (v0 + a0 * dt);
+      fg[1 + cte_start + t] = cte1 - ((f0 - y0) +(v0*CppAD::sin(epsi0) * dt));
+      fg[1 + epsi_start + t] = epsi1 - ((psi0 - psides0) - v0/Lf*delta0 * dt); //updated to opposite direction
+    }
+```
+This is based on Quiz of the previous lesson but modified to accommodate for a cubic polynomial.
+
+##### The error- or cost-function to be minimized
+```cpp
+fg[0] = 0;
+
+    // The part of the cost based on the reference state.
+    for (int t = 0; t < N; t++) {
+      fg[0] += 5000 *CppAD::pow(vars[cte_start + t], 2);
+      fg[0] += 500 * CppAD::pow(vars[epsi_start + t], 2);
+      fg[0] +=  CppAD::pow(vars[v_start + t] - ref_v, 2);
+    }
+
+    // Minimize the use of actuators.
+    for (int t = 0; t < N - 1; t++) {
+      fg[0] +=  5* CppAD::pow(vars[delta_start + t], 2);
+      fg[0] +=  5* CppAD::pow(vars[a_start + t], 2);
+      //corner breaking
+      fg[0] += 300 * CppAD::pow(vars[delta_start + t]*vars[v_start + t], 2);
+
+    }
+
+    // Minimize the value gap between sequential actuations.
+    for (int t = 0; t < N - 2; t++) {
+      fg[0] += 300 * CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
+      //fg[0] += CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
+    }
+```
+with
+```cpp
+//Goal velocity
+double ref_v = 150;
+```
+For each predicted future time step the values are used to calculate a penalty which needs to be minimized in order to let the vehicle drive as efficiently as possible.
+Here I introduced certain factors for each vehicle state parameter. This was done by trial and error. The driving behavior of the car was geared towards an aggressive driving style in order to archive higher velocities. That is why I did not include a penalty for abrupt acceleration and deceleration (~late braking etc.).
+
+For smooth (and realistic) steering around corners I introduced a penalty for high velocities at high steering angles.
+
+I chose a high goal velocity so that the model accelerates at maximum whenever it is possible to accelerate.
+
+#### Timestep Length and Elapsed Duration (N & dt)
+
+My parameters:
+
+```cpp
+// TODO: Set the timestep length and duration
+size_t N = 8;
+double dt = 0.1;
+```
+
+- `dt` was chosen to be 0.1 s as this is the (artificial) response delay. Anything smaller than 0.1s would make the model more complex to compute without a noticeable improvement in the solution. Bigger values would make the model more unstable especially at higher speeds
+- `N` was chosen to be 8. Bigger values made the driving less stable, most likely because the car is not **directly** forced towards the optimal line but rather further "down the line". Furthermore, at higher speeds the length of the predicted line is very far in the front (future) lacking any aditional information to the current state. Smaller values had problems finding a stable solution at very slow speeds (around corners, at the very beginning).
+
+#### Results
+
+The relevant variables of the result-vector of the optimization function are extracted to a new vector and returned to the `main` function. These are the coordinates of the projected driving line for the `N` next time step with respect to the current time step and the proposed acceleration and steering angle for the next time step.
+
+```cpp
+vector<double> shortened_solution;
+
+for(int i=x_start; i<y_start; i++){
+    shortened_solution.push_back(solution.x[i]);
+    }
+for(int i=y_start; i<psi_start; i++){
+    shortened_solution.push_back(solution.x[i]);
+    }
+shortened_solution.push_back(solution.x[delta_start]);
+shortened_solution.push_back(solution.x[a_start]);
+shortened_solution.push_back(N); //adding length of vector to result, (easier testing later)
+  ```
+In the main function the data is extracted from the variable (here named `vars`) and used from actuating the car and displaying the proposed car trajectory.
+
+```cpp
+          size_t N = vars.end()[-1];
+          steer_value=vars.end()[-3]/deg2rad(25);
+          throttle_value=vars.end()[-2];
+
+          json msgJson;
+          // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
+          // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
+          msgJson["steering_angle"] = steer_value;
+          msgJson["throttle"] = throttle_value;
 
 
-## Basic Build Instructions
+          //Display the MPC predicted trajectory
+          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
+          // the points in the simulator are connected by a Green line
+          vector<double> mpc_x_vals;
+          vector<double> mpc_y_vals;
 
-1. Clone this repo.
-2. Make a build directory: `mkdir build && cd build`
-3. Compile: `cmake .. && make`
-4. Run it: `./mpc`.
+          for(int i=0; i<N;i++){
+                mpc_x_vals.push_back(vars[i]);
+                mpc_y_vals.push_back(vars[i+N]);
+          }
 
-## Tips
+          msgJson["mpc_x"] = mpc_x_vals;
+          msgJson["mpc_y"] = mpc_y_vals;
+```
 
-1. It's recommended to test the MPC on basic examples to see if your implementation behaves as desired. One possible example
-is the vehicle starting offset of a straight line (reference). If the MPC implementation is correct, after some number of timesteps
-(not too many) it should find and track the reference line.
-2. The `lake_track_waypoints.csv` file has the waypoints of the lake track. You could use this to fit polynomials and points and see of how well your model tracks curve. NOTE: This file might be not completely in sync with the simulator so your solution should NOT depend on it.
-3. For visualization this C++ [matplotlib wrapper](https://github.com/lava/matplotlib-cpp) could be helpful.)
-4.  Tips for setting up your environment are available [here](https://classroom.udacity.com/nanodegrees/nd013/parts/40f38239-66b6-46ec-ae68-03afd8a601c8/modules/0949fca6-b379-42af-a919-ee50aa304e6a/lessons/f758c44c-5e40-4e01-93b5-1a82aa4e044f/concepts/23d376c7-0195-4276-bdf0-e02f1f3c665d)
-5. **VM Latency:** Some students have reported differences in behavior using VM's ostensibly a result of latency.  Please let us know if issues arise as a result of a VM environment.
+### Performance
 
-## Editor Settings
+I aimed for a very aggressive race-driver-like driving style. Because of this, I basically maxed out the prerequisites ("No tire may leave the drivable portion of the track surface. The car may not pop up onto ledges...") to pass this project.
+This allowed me to have **driving speeds of up to 108 mph with the car finishing infinite successful laps**.
+With a slower driving style (maximum velocity of e.g. 70mph, higher `epsi` penalty, to not cut corners) the car stays further to the center of the lane.
 
-We've purposefully kept editor configuration files out of this repo in order to
-keep it as simple and environment agnostic as possible. However, we recommend
-using the following settings:
-
-* indent using spaces
-* set tab width to 2 spaces (keeps the matrices in source code aligned)
-
-## Code Style
-
-Please (do your best to) stick to [Google's C++ style guide](https://google.github.io/styleguide/cppguide.html).
-
-## Project Instructions and Rubric
-
-Note: regardless of the changes you make, your project must be buildable using
-cmake and make!
-
-More information is only accessible by people who are already enrolled in Term 2
-of CarND. If you are enrolled, see [the project page](https://classroom.udacity.com/nanodegrees/nd013/parts/40f38239-66b6-46ec-ae68-03afd8a601c8/modules/f1820894-8322-4bb3-81aa-b26b3c6dcbaf/lessons/b1ff3be0-c904-438e-aad3-2b5379f0e0c3/concepts/1a2255a0-e23c-44cf-8d41-39b8a3c8264a)
-for instructions and the project rubric.
-
-## Hints!
-
-* You don't have to follow this directory structure, but if you do, your work
-  will span all of the .cpp files here. Keep an eye out for TODOs.
-
-## Call for IDE Profiles Pull Requests
-
-Help your fellow students!
-
-We decided to create Makefiles with cmake to keep this project as platform
-agnostic as possible. Similarly, we omitted IDE profiles in order to we ensure
-that students don't feel pressured to use one IDE or another.
-
-However! I'd love to help people get up and running with their IDEs of choice.
-If you've created a profile for an IDE that you think other students would
-appreciate, we'd love to have you add the requisite profile files and
-instructions to ide_profiles/. For example if you wanted to add a VS Code
-profile, you'd add:
-
-* /ide_profiles/vscode/.vscode
-* /ide_profiles/vscode/README.md
-
-The README should explain what the profile does, how to take advantage of it,
-and how to install it.
-
-Frankly, I've never been involved in a project with multiple IDE profiles
-before. I believe the best way to handle this would be to keep them out of the
-repo root to avoid clutter. My expectation is that most profiles will include
-instructions to copy files to a new location to get picked up by the IDE, but
-that's just a guess.
-
-One last note here: regardless of the IDE used, every submitted project must
-still be compilable with cmake and make./
-
-## How to write a README
-A well written README file can enhance your project and portfolio.  Develop your abilities to create professional README files by completing [this free course](https://www.udacity.com/course/writing-readmes--ud777).
+Before compensating for the response delay the driving performance was much poorer. I barely reached 30mph without starting to lurch over the whole lane as the car was overcompensating for the previous driving actuations. Additionally the mapped reference points were shifted while the car was turning, leading to further inaccuracies.
