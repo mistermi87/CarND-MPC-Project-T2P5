@@ -68,12 +68,15 @@ auto vars = mpc.Solve(state, coeffs);
 
 This vehicle state, containing the position `x`,`y`, the current angle `psi`, the velocity `v`, and the positional error `cte` as well as the angular error `epsi` is loaded into the solver function. Additionally the coefficients of the polynomial of the reference points (in car coordinates) are given to that function.
 
-Similar to the Quiz "Mind the Line" those state-values and additional actuator values (steering angle and acceleration) are loaded into a single vector (`vars`) for further processing. This value contains also space for the state of the car and the actuators in N future time steps.
+Similar to the Quiz "Mind the Line" those state-values and additional actuator values (steering angle and acceleration) are loaded into a single vector (`vars`) for further processing. This vector contains also space for the state of the car and the actuators in N future time-steps.
 Two other vectors are created (`vars_upperbound`,`vars_lowerbound`) containing the upper and lower bound (constraints) for each of the vehicle/actuator states in each time-step respectively. For example the steering angle is limited to +/- 0.435332 rad (+/- 25°).
 
-The evalutation class `fg_eval` tries to solve the equations predicting the future vehicle states while minimzing an error- or cost-function.
+##### The cost-function to be minimized
+The evalutation class `fg_eval` tries to solve the equations predicting the future vehicle states while minimzing a cost-function. This is done by introducing the vector `fg`. Its first entry contains a cost that is used for penalizing driving behavior (= vehicle states, changes in vehicle states or vehicle actuations) that is detrimental for smooth and efficient driving.
 
-##### The error- or cost-function to be minimized
+For this I introduced certain error factors for each vehicle state parameter. This was done by trial and error. The driving behavior of the car was geared towards a rather conservative driving style. It often happend that after several successful laps, the car would start to build up to an oscillation around the center line on straight parts of the lap. For this and for smooth (and realistic) steering around corners I additonally introduced a penalty for high velocities at high steering angles.
+
+
 ```cpp
 fg[0] = 0;
 
@@ -103,10 +106,19 @@ with
 //Goal velocity in m/s
 double ref_v = 30;
 ```
-For each predicted future time step the values are used to calculate a penalty which needs to be minimized in order to let the vehicle drive as efficiently as possible.
-Here I introduced certain factors for each vehicle state parameter. This was done by trial and error. The driving behavior of the car was geared towards a rather conservative driving style. It often happend that after several successful laps, the car would start to build up to a oscillation around the center line on straight parts of the lap. For this and for smooth (and realistic) steering around corners I introduced a penalty for high velocities at high steering angles.
+
 
 ##### The constraining equations predicting the future vehicle states
+
+The rest of the entries of the `fg` vector are the differences between the states at `t+1` and the solution of the linear motion model equations using the states at `t` respectively. This is mimimized as well (recursive for each future `t`) in order to find a continuous motion of the vehicle from `t=0` to `t=N` (* dt).
+
+Equations of the Motion model:
+![Equations of the Motion model from the lecture ](equations.jpg)
+
+> These are the same equations used for predicting the car state after the latency in the `main` function.
+
+The vector `vars` is used for recusevly storing and loading the values of the states at all times `t`.
+When the the vector `fg` is mimimized, `vars` becomes the solution vector.
 ```cpp
 for (int t = 1; t < N; t++) {
       AD<double> x0 = vars[x_start + t - 1];
@@ -138,11 +150,7 @@ for (int t = 1; t < N; t++) {
       fg[1 + epsi_start + t] = epsi1 - ((psi0 - psides0) - v0/Lf*delta0 * dt); //updated to opposite direction
     }
 ```
-This is based on Quiz of the previous lesson but modified to accommodate for a cubic polynomial.
-In this part of the solver
-fg..part of solver
 
-![Equations of the Motion model  from the lecture ](equations.jpg)
 
 
 
