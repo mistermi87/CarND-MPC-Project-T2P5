@@ -120,9 +120,9 @@ Equations of the Motion model:
 The vector `vars` is used for recusevly storing and loading the values of the states at all times `t`.
 When the the vector `fg` is mimimized, `vars` becomes the solution vector.
 
-> **Example: solving for x_1**
+> **Example solving for x_1:** 
 > Starting at `t=1` (=next time_step) the previous value $x_0$ (t-1=0) is loaded from `vars` and named `x0`. Additionaly the current value is loaded and named `x1`. The same is done for `v0` and `psi0`.
-> With this the difference between `x1` and the projected `x1_m` using the linear motion model is calculated. The motion model's equation for `x1_modeled` is `x1_modeled=(x0 + v0 * CppAD::cos(psi0) * dt` (The motion model uses only the state at the current time-step to make an assumption about the next state of the vehicle.) With this the difference to be mimimized is `fg[1 + x_start + t] = x1 - x1_modeled` so `fg[1 + x_start + t] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt)`.
+> With this the difference between `x1` and the projected `x1_modeled` using the linear motion model is calculated in order to be mimimized later. The motion model's equation for `x1_modeled` is `x1_modeled=(x0 + v0 * CppAD::cos(psi0) * dt` (The motion model uses only the state at the current time-step to make an assumption about the next state of the vehicle.) With this the difference to be mimimized is `fg[1 + x_start + t] = x1 - x1_modeled` so `fg[1 + x_start + t] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt)`.
 
 
 ```cpp
